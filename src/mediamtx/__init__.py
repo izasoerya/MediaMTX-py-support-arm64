@@ -18,7 +18,7 @@ def _detect_arch():
     if m in ("x86_64", "amd64"):
         return "amd64"
     if m in ("aarch64", "arm64"):
-        return "arm64v8"
+        return "arm64"
     if m in ("armv7l", "armv7"):
         return "armv7"
     return m  # unknown -> will error later with a clear message
@@ -28,8 +28,8 @@ def _build_download_url(system: str, arch: str) -> str:
     if system == "Linux":
         if arch == "amd64":
             return f"{base}/mediamtx_{MEDIAMTX_VERSION}_linux_amd64.tar.gz"
-        if arch == "arm64v8":
-            return f"{base}/mediamtx_{MEDIAMTX_VERSION}_linux_arm64v8.tar.gz"
+        if arch == "arm64":
+            return f"{base}/mediamtx_{MEDIAMTX_VERSION}_linux_arm64.tar.gz"
         if arch == "armv7":
             return f"{base}/mediamtx_{MEDIAMTX_VERSION}_linux_armv7.tar.gz"
         raise Exception(f"Unsupported Linux arch: {arch}")
