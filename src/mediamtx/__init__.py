@@ -6,14 +6,37 @@ import subprocess
 import os
 import zipfile
 import logging
+import stat
 
 logger = logging.getLogger(__name__)
 
-MEDIAMTX_URLS = {
-    "Linux": "https://github.com/bluenviron/mediamtx/releases/download/v1.14.0/mediamtx_v1.14.0_linux_amd64.tar.gz",
-    "Windows": "https://github.com/bluenviron/mediamtx/releases/download/v1.14.0/mediamtx_v1.14.0_windows_amd64.zip",
-}
+# Allow overriding the version at runtime, fallback to the current default
+MEDIAMTX_VERSION = os.environ.get("MEDIAMTX_VERSION", "v1.14.0")
 
+def _detect_arch():
+    m = platform.machine().lower()
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    if m in ("aarch64", "arm64"):
+        return "arm64v8"
+    if m in ("armv7l", "armv7"):
+        return "armv7"
+    return m  # unknown -> will error later with a clear message
+
+def _build_download_url(system: str, arch: str) -> str:
+    base = f"https://github.com/bluenviron/mediamtx/releases/download/{MEDIAMTX_VERSION}"
+    if system == "Linux":
+        if arch == "amd64":
+            return f"{base}/mediamtx_{MEDIAMTX_VERSION}_linux_amd64.tar.gz"
+        if arch == "arm64v8":
+            return f"{base}/mediamtx_{MEDIAMTX_VERSION}_linux_arm64v8.tar.gz"
+        if arch == "armv7":
+            return f"{base}/mediamtx_{MEDIAMTX_VERSION}_linux_armv7.tar.gz"
+        raise Exception(f"Unsupported Linux arch: {arch}")
+    if system == "Windows":
+        # Keeping only amd64 here; extend if you need 32-bit
+        return f"{base}/mediamtx_{MEDIAMTX_VERSION}_windows_amd64.zip"
+    raise Exception(f"Unsupported OS: {system}")
 
 class Singleton(object):
     def __new__(cls, *args, **kargs):
@@ -21,49 +44,65 @@ class Singleton(object):
             cls._instance = super(Singleton, cls).__new__(cls)
         return cls._instance
 
-
 class MediaMTX(Singleton):
     def __init__(self):
         self.system = platform.system()
-        if self.system not in MEDIAMTX_URLS:
-            raise Exception("Unsupported OS")
-        url = MEDIAMTX_URLS[self.system]
-        if self.system == "Linux" and os.path.exists("mediamtx/mediamtx"):
-            return
-        if self.system == "Windows" and os.path.exists("mediamtx/mediamtx.exe"):
-            return
+        arch = _detect_arch()
+        url = _build_download_url(self.system, arch)
 
-        # Download binary
-        logger.info("Downloading MediaMTX...")
-        os.makedirs("mediamtx/")
-        if url.endswith(".tar.gz"):
-            urllib.request.urlretrieve(url, "mediamtx.tar.gz")
-            with tarfile.open("mediamtx.tar.gz", mode="r:gz") as tar:
-                tar.extractall("mediamtx/")
-            os.remove("mediamtx.tar.gz")
-        elif url.endswith(".zip"):
-            urllib.request.urlretrieve(url, "mediamtx.zip")
-            with zipfile.ZipFile("mediamtx.zip", "r") as zip_ref:
-                zip_ref.extractall("mediamtx/")
-            os.remove("mediamtx.zip")
-        logger.info("Download Complete")
+        os.makedirs("mediamtx", exist_ok=True)
 
-        with open("mediamtx/mediamtx.yml", encoding="utf-8") as f:
+        binary = os.path.join(
+            "mediamtx", "mediamtx.exe" if self.system == "Windows" else "mediamtx"
+        )
+        yaml_path = os.path.join("mediamtx", "mediamtx.yml")
+
+        # Download only if missing
+        if not (os.path.exists(binary) and os.path.exists(yaml_path)):
+            logger.info(f"Downloading MediaMTX ({self.system}, {arch}) from {url} ...")
+            if url.endswith(".tar.gz"):
+                tmp = os.path.join("mediamtx", "mediamtx.tar.gz")
+                urllib.request.urlretrieve(url, tmp)
+                with tarfile.open(tmp, mode="r:gz") as tar:
+                    tar.extractall("mediamtx")
+                os.remove(tmp)
+            elif url.endswith(".zip"):
+                tmp = os.path.join("mediamtx", "mediamtx.zip")
+                urllib.request.urlretrieve(url, tmp)
+                with zipfile.ZipFile(tmp, "r") as zip_ref:
+                    zip_ref.extractall("mediamtx")
+                os.remove(tmp)
+            else:
+                raise Exception(f"Unknown archive format for URL: {url}")
+
+        # Ensure executable bit on Linux
+        if self.system == "Linux" and os.path.exists(binary):
+            st = os.stat(binary)
+            os.chmod(binary, st.st_mode | stat.S_IEXEC)
+
+        # Final check
+        if not os.path.exists(binary):
+            raise FileNotFoundError(f"MediaMTX binary not found at {binary}")
+        if not os.path.exists(yaml_path):
+            raise FileNotFoundError(f"MediaMTX config not found at {yaml_path}")
+
+        # Load YAML so add_path() can work without re-reading
+        with open(yaml_path, encoding="utf-8") as f:
             self.yaml = yaml.safe_load(f)
 
     def start(self):
         logger.info("Starting MediaMTX...")
-        if self.system == "Linux":
-            self.proc = subprocess.Popen(["mediamtx/mediamtx", "mediamtx/mediamtx.yml"])
-        elif self.system == "Windows":
-            self.proc = subprocess.Popen(
-                ["mediamtx/mediamtx.exe", "mediamtx/mediamtx.yml"]
-            )
+        binary = os.path.join(
+            "mediamtx", "mediamtx.exe" if self.system == "Windows" else "mediamtx"
+        )
+        yaml_path = os.path.join("mediamtx", "mediamtx.yml")
+        self.proc = subprocess.Popen([binary, yaml_path])
         logger.info("Process Started")
 
     def stop(self):
         logger.info("Stopping MediaMTX...")
-        self.proc.kill()
+        if hasattr(self, "proc") and self.proc:
+            self.proc.kill()
         logger.info("Stopped MediaMTX")
 
     def get_yaml(self):
